@@ -26,12 +26,25 @@ class ModeCortexRuntime:
     operational modes, each with their own configuration, inputs, and actions.
     """
 
+    mode_config: ModeSystemConfig
+    mode_config_name: str
+    mode_manager: ModeManager
+    io_provider: IOProvider
+    sleep_ticker_provider: SleepTickerProvider
+
+    current_config: Optional[RuntimeConfig]
+    fuser: Optional[Fuser]
+    action_orchestrator: Optional[ActionOrchestrator]
+    simulator_orchestrator: Optional[SimulatorOrchestrator]
+    background_orchestrator: Optional[BackgroundOrchestrator]
+    input_orchestrator: Optional[InputOrchestrator]
+
     def __init__(
         self,
         mode_config: ModeSystemConfig,
         mode_config_name: str,
         hot_reload: bool = True,
-        check_interval: int = 60,
+        check_interval: float = 60,
     ):
         """
         Initialize the mode-aware cortex runtime.
@@ -44,7 +57,7 @@ class ModeCortexRuntime:
             The name of the configuration file (used for logging purposes)
         hot_reload : bool, optional
             Enable hot-reload of configuration files (default: True)
-        check_interval : int, optional
+        check_interval : float, optional
             Interval in seconds to check for config file changes (default: 60)
         """
         self.mode_config = mode_config
@@ -60,7 +73,7 @@ class ModeCortexRuntime:
         self.last_modified: Optional[float] = None
 
         # Initialize hot-reload if enabled
-        if self.hot_reload and self.mode_config_name:
+        if self.hot_reload:
             self.config_path = os.path.join(
                 os.path.dirname(__file__),
                 "../../../config",
@@ -91,6 +104,9 @@ class ModeCortexRuntime:
 
         # Flag to track if mode is initialized
         self._mode_initialized = False
+
+        # Flag to track if a reload is in progress
+        self._is_reloading = False
 
     async def _initialize_mode(self, mode_name: str):
         """
@@ -131,6 +147,9 @@ class ModeCortexRuntime:
         logging.info(f"Handling mode transition: {from_mode} -> {to_mode}")
 
         try:
+            # Set reloading flag
+            self._is_reloading = True
+
             # Stop current orchestrators
             await self._stop_current_orchestrators()
 
@@ -146,57 +165,91 @@ class ModeCortexRuntime:
             logging.error(f"Error during mode transition {from_mode} -> {to_mode}: {e}")
             # TODO: Implement fallback/recovery mechanism
             raise
+        finally:
+            self._is_reloading = False
 
-    async def _stop_current_orchestrators(self):
+    async def _stop_current_orchestrators(self) -> None:
         """
         Stop all current orchestrator tasks gracefully.
         """
         logging.debug("Stopping current orchestrators...")
 
-        tasks_to_cancel = []
+        tasks_to_cancel = {}
 
         if self.cortex_loop_task and not self.cortex_loop_task.done():
             logging.debug("Cancelling cortex loop task")
-            tasks_to_cancel.append(self.cortex_loop_task)
+            tasks_to_cancel["cortex_loop"] = self.cortex_loop_task
 
         if self.input_listener_task and not self.input_listener_task.done():
             logging.debug("Cancelling input listener task")
-            tasks_to_cancel.append(self.input_listener_task)
+            tasks_to_cancel["input_listener"] = self.input_listener_task
 
         if self.simulator_task and not self.simulator_task.done():
             logging.debug("Cancelling simulator task")
-            tasks_to_cancel.append(self.simulator_task)
+            tasks_to_cancel["simulator"] = self.simulator_task
 
         if self.action_task and not self.action_task.done():
             logging.debug("Cancelling action task")
-            tasks_to_cancel.append(self.action_task)
+            tasks_to_cancel["action"] = self.action_task
 
         if self.background_task and not self.background_task.done():
             logging.debug("Cancelling background task")
-            tasks_to_cancel.append(self.background_task)
+            tasks_to_cancel["background"] = self.background_task
 
         # Cancel all tasks
-        for task in tasks_to_cancel:
+        for name, task in tasks_to_cancel.items():
             task.cancel()
+            logging.debug(f"Cancelled task: {name}")
 
-        # Wait for cancellations to complete
+        # Wait for cancellations to complete with timeout
         if tasks_to_cancel:
             try:
-                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-                logging.debug(
-                    f"Successfully cancelled {len(tasks_to_cancel)} orchestrator tasks"
+                done, pending = await asyncio.wait(
+                    tasks_to_cancel.values(),
+                    timeout=1.0,
+                    return_when=asyncio.ALL_COMPLETED,
                 )
-            except Exception as e:
-                logging.warning(f"Error during orchestrator shutdown: {e}")
+                if pending:
+                    pending_names = [
+                        name
+                        for name, task in tasks_to_cancel.items()
+                        if task in pending
+                    ]
+                    completed_names = [
+                        name for name, task in tasks_to_cancel.items() if task in done
+                    ]
 
-        # Clear task references
+                    logging.warning(
+                        f"Abandoning {len(pending)} unresponsive tasks: {pending_names}"
+                    )
+                    logging.info(
+                        f"Successfully cancelled {len(done)} tasks: {completed_names}"
+                    )
+                    logging.info(
+                        "Continuing with reload without waiting for unresponsive tasks"
+                    )
+                else:
+                    logging.info(f"All {len(done)} tasks cancelled successfully!")
+                    for name, task in tasks_to_cancel.items():
+                        try:
+                            task.result()
+                            logging.info(f"  {name}: Completed normally")
+                        except asyncio.CancelledError:
+                            logging.info(f"  {name}: Successfully cancelled")
+                        except Exception as e:
+                            logging.warning(
+                                f"  {name}: Exception - {type(e).__name__}: {e}"
+                            )
+
+            except Exception as e:
+                logging.warning(f"Error during task cancellation: {e}")
+                logging.info("Continuing with reload despite cancellation errors")
+
+        self.cortex_loop_task = None
         self.input_listener_task = None
         self.simulator_task = None
         self.action_task = None
         self.background_task = None
-        self.cortex_loop_task = None
-
-        logging.debug("Orchestrators stopped successfully")
 
     async def _start_orchestrators(self):
         """
@@ -299,11 +352,7 @@ class ModeCortexRuntime:
                     awaitables: List[Union[asyncio.Task, asyncio.Future]] = [
                         self.cortex_loop_task
                     ]
-                    if (
-                        self.hot_reload
-                        and self.config_watcher_task
-                        and not self.config_watcher_task.done()
-                    ):
+                    if self.config_watcher_task and not self.config_watcher_task.done():
                         awaitables.append(self.config_watcher_task)
                     if self.input_listener_task and not self.input_listener_task.done():
                         awaitables.append(self.input_listener_task)
@@ -363,19 +412,31 @@ class ModeCortexRuntime:
         """
         Execute the main cortex processing loop with mode awareness.
         """
-        while True:
-            try:
-                if not self.sleep_ticker_provider.skip_sleep and self.current_config:
-                    await self.sleep_ticker_provider.sleep(
-                        1 / self.current_config.hertz
-                    )
+        try:
+            while True:
+                try:
+                    if (
+                        not self.sleep_ticker_provider.skip_sleep
+                        and self.current_config
+                    ):
+                        await self.sleep_ticker_provider.sleep(
+                            1 / self.current_config.hertz
+                        )
 
-                await self._tick()
-                self.sleep_ticker_provider.skip_sleep = False
+                    # Helper to yield control to event loop
+                    await asyncio.sleep(0)
 
-            except Exception as e:
-                logging.error(f"Error in cortex loop: {e}")
-                await asyncio.sleep(1.0)
+                    await self._tick()
+                    self.sleep_ticker_provider.skip_sleep = False
+                except Exception as e:
+                    logging.error(f"Error in cortex loop: {e}")
+                    await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            logging.info("Cortex loop cancelled, exiting gracefully")
+            raise
+        except Exception as e:
+            logging.error(f"Unexpected error in cortex loop: {e}")
+            raise
 
     async def _tick(self) -> None:
         """
@@ -383,6 +444,10 @@ class ModeCortexRuntime:
         """
         if not self.current_config or not self.fuser or not self.action_orchestrator:
             logging.warning("Cortex not properly initialized, skipping tick")
+            return
+
+        if self._is_reloading:
+            logging.debug("Skipping tick during config reload")
             return
 
         finished_promises, _ = await self.action_orchestrator.flush_promises()
@@ -494,6 +559,8 @@ class ModeCortexRuntime:
         try:
             logging.info(f"Reloading mode configuration: {self.config_path}")
 
+            self._is_reloading = True
+
             current_mode = self.mode_manager.current_mode_name
 
             await self._stop_current_orchestrators()
@@ -530,3 +597,6 @@ class ModeCortexRuntime:
         except Exception as e:
             logging.error(f"Failed to reload mode configuration: {e}")
             logging.error("Continuing with previous configuration")
+
+        finally:
+            self._is_reloading = False

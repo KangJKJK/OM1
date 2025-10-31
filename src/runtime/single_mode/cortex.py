@@ -34,13 +34,14 @@ class CortexRuntime:
     simulator_orchestrator: SimulatorOrchestrator
     background_orchestrator: BackgroundOrchestrator
     sleep_ticker_provider: SleepTickerProvider
+    io_provider: IOProvider
 
     def __init__(
         self,
         config: RuntimeConfig,
         config_name: str,
         hot_reload: bool = True,
-        check_interval: float = 60.0,
+        check_interval: float = 60,
     ):
         """
         Initialize the CortexRuntime with provided configuration.
@@ -75,6 +76,8 @@ class CortexRuntime:
         self.action_task: Optional[Union[asyncio.Task, asyncio.Future]] = None
         self.background_task: Optional[Union[asyncio.Task, asyncio.Future]] = None
         self.cortex_loop_task: Optional[asyncio.Task] = None
+
+        self._is_reloading = False
 
         if self.hot_reload:
             self.config_path = os.path.join(
@@ -186,6 +189,7 @@ class CortexRuntime:
         """
         try:
             logging.info(f"Reloading configuration: {self.config_name}")
+            self._is_reloading = True
 
             if self.config_name:
                 new_config = load_config(self.config_name)
@@ -211,54 +215,91 @@ class CortexRuntime:
         except Exception as e:
             logging.error(f"Failed to reload configuration: {e}")
             logging.error("Continuing with previous configuration")
+        finally:
+            self._is_reloading = False
 
     async def _stop_current_orchestrators(self) -> None:
         """
         Stop all current orchestrator tasks gracefully.
         """
-        logging.debug("Stopping current orchestrators for reload...")
+        logging.debug("Stopping current orchestrators...")
 
-        tasks_to_cancel = []
+        tasks_to_cancel = {}
 
         if self.cortex_loop_task and not self.cortex_loop_task.done():
             logging.debug("Cancelling cortex loop task")
-            tasks_to_cancel.append(self.cortex_loop_task)
+            tasks_to_cancel["cortex_loop"] = self.cortex_loop_task
 
         if self.input_listener_task and not self.input_listener_task.done():
             logging.debug("Cancelling input listener task")
-            tasks_to_cancel.append(self.input_listener_task)
+            tasks_to_cancel["input_listener"] = self.input_listener_task
 
         if self.simulator_task and not self.simulator_task.done():
             logging.debug("Cancelling simulator task")
-            tasks_to_cancel.append(self.simulator_task)
+            tasks_to_cancel["simulator"] = self.simulator_task
 
         if self.action_task and not self.action_task.done():
             logging.debug("Cancelling action task")
-            tasks_to_cancel.append(self.action_task)
+            tasks_to_cancel["action"] = self.action_task
 
         if self.background_task and not self.background_task.done():
             logging.debug("Cancelling background task")
-            tasks_to_cancel.append(self.background_task)
+            tasks_to_cancel["background"] = self.background_task
 
-        for task in tasks_to_cancel:
+        # Cancel all tasks
+        for name, task in tasks_to_cancel.items():
             task.cancel()
+            logging.debug(f"Cancelled task: {name}")
 
+        # Wait for cancellations to complete with timeout
         if tasks_to_cancel:
             try:
-                await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
-                logging.debug(
-                    f"Successfully cancelled {len(tasks_to_cancel)} orchestrator tasks"
+                done, pending = await asyncio.wait(
+                    tasks_to_cancel.values(),
+                    timeout=1.0,
+                    return_when=asyncio.ALL_COMPLETED,
                 )
+                if pending:
+                    pending_names = [
+                        name
+                        for name, task in tasks_to_cancel.items()
+                        if task in pending
+                    ]
+                    completed_names = [
+                        name for name, task in tasks_to_cancel.items() if task in done
+                    ]
+
+                    logging.warning(
+                        f"Abandoning {len(pending)} unresponsive tasks: {pending_names}"
+                    )
+                    logging.info(
+                        f"Successfully cancelled {len(done)} tasks: {completed_names}"
+                    )
+                    logging.info(
+                        "Continuing with reload without waiting for unresponsive tasks"
+                    )
+                else:
+                    logging.info(f"All {len(done)} tasks cancelled successfully!")
+                    for name, task in tasks_to_cancel.items():
+                        try:
+                            task.result()
+                            logging.info(f"  {name}: Completed normally")
+                        except asyncio.CancelledError:
+                            logging.info(f"  {name}: Successfully cancelled")
+                        except Exception as e:
+                            logging.warning(
+                                f"  {name}: Exception - {type(e).__name__}: {e}"
+                            )
+
             except Exception as e:
-                logging.warning(f"Error during orchestrator shutdown: {e}")
+                logging.warning(f"Error during task cancellation: {e}")
+                logging.info("Continuing with reload despite cancellation errors")
 
         self.cortex_loop_task = None
         self.input_listener_task = None
         self.simulator_task = None
         self.action_task = None
         self.background_task = None
-
-        logging.debug("Orchestrators stopped successfully")
 
     async def _start_orchestrators(self) -> None:
         """
@@ -284,11 +325,7 @@ class CortexRuntime:
         """
         tasks_to_cancel = []
 
-        if (
-            self.hot_reload
-            and self.config_watcher_task
-            and not self.config_watcher_task.done()
-        ):
+        if self.config_watcher_task and not self.config_watcher_task.done():
             tasks_to_cancel.append(self.config_watcher_task)
         if self.cortex_loop_task and not self.cortex_loop_task.done():
             tasks_to_cancel.append(self.cortex_loop_task)
@@ -348,11 +385,26 @@ class CortexRuntime:
         -------
         None
         """
-        while True:
-            if not self.sleep_ticker_provider.skip_sleep:
-                await self.sleep_ticker_provider.sleep(1 / self.config.hertz)
-            await self._tick()
-            self.sleep_ticker_provider.skip_sleep = False
+        try:
+            while True:
+                logging.info("--- Cortex Loop Tick ---")
+                logging.info(f"hertz: {self.config.hertz}")
+                logging.info(f"skip_sleep: {self.sleep_ticker_provider.skip_sleep}")
+                logging.info("------------------------")
+                if not self.sleep_ticker_provider.skip_sleep:
+                    await self.sleep_ticker_provider.sleep(1 / self.config.hertz)
+
+                # Helper to yield control to event loop
+                await asyncio.sleep(0)
+
+                await self._tick()
+                self.sleep_ticker_provider.skip_sleep = False
+        except asyncio.CancelledError:
+            logging.info("Cortex loop cancelled, exiting gracefully")
+            raise
+        except Exception as e:
+            logging.error(f"Unexpected error in cortex loop: {e}")
+            raise
 
     async def _tick(self) -> None:
         """
@@ -365,6 +417,10 @@ class CortexRuntime:
         -------
         None
         """
+        if self._is_reloading:
+            logging.debug("Skipping tick during config reload")
+            return
+
         # collect all the latest inputs
         finished_promises, _ = await self.action_orchestrator.flush_promises()
 

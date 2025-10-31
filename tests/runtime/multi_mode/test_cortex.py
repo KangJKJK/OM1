@@ -253,7 +253,17 @@ class TestModeCortexRuntime:
         runtime.action_task = mock_action_task
         runtime.background_task = mock_background_task
 
-        with patch("asyncio.gather", new_callable=AsyncMock) as mock_gather:
+        with patch("asyncio.wait", new_callable=AsyncMock) as mock_wait:
+            mock_wait.return_value = (
+                {
+                    mock_input_task,
+                    mock_simulator_task,
+                    mock_action_task,
+                    mock_background_task,
+                },
+                set(),
+            )
+
             await runtime._stop_current_orchestrators()
 
             mock_input_task.cancel.assert_called_once()
@@ -261,7 +271,7 @@ class TestModeCortexRuntime:
             mock_action_task.cancel.assert_called_once()
             mock_background_task.cancel.assert_called_once()
 
-            mock_gather.assert_called_once()
+            mock_wait.assert_called_once()
 
             assert runtime.input_listener_task is None
             assert runtime.simulator_task is None
