@@ -14,7 +14,8 @@ Modes can be user-selected (via voice commands or UI).
 ![Modes](../assets/full-autonomy-assets/modes.png)
 
 1. Welcome mode - Initial greeting and user information gathering
-    - Face detection and face anonymysation.
+    - Face detection and face anonymization. 
+    - The robot greets you and remembers you.
 2. Slam mode - Autonomous navigation and mapping mode
     - Enables OM1 to explore and map its surroundings using its sensors.
     - Builds and updates internal maps for navigation and spatial awareness.
@@ -33,3 +34,7 @@ Modes can be user-selected (via voice commands or UI).
     - Uses existing maps (from Slam Mode) for pathfinding.
     - Avoids obstacles and ensures safe movement to the target location.
 
+## Introducing Lifecycle
+
+Each operational mode in OM1 follows a defined lifecycle, representing the complete process from entry to exit of that mode.
+A mode lifecycle ensures predictable behavior, safe transitions, and consistent data handling across all system states.
