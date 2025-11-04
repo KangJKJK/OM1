@@ -112,7 +112,7 @@ We're excited to introduce **full autonomy mode**, where four services work toge
 
 ## Intro to BrainPack?
 From research to real-world autonomy, a platform that learns, moves, and builds with you.
-We'll shortly be releasing the **BOM** and details on **DIY** for the it. 
+We'll shortly be releasing the **BOM** and details on **DIY** for it. 
 Stay tuned!
 
 Clone the following repos -
