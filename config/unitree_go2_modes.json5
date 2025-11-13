@@ -157,7 +157,7 @@
           "type": "UnitreeGo2State",
         },
         {
-          "type": "UnitreeGo2AMCL",
+          "type": "UnitreeGo2LidarLocalization",
         },
         {
           "type": "UnitreeGo2Navigation",
@@ -253,7 +253,7 @@
           "type": "LocationsInput"
         },
         {
-          "type": "LocalizationInput"
+          "type": "LidarLocalizationInput"
         },
         {
           "type": "Odom"
@@ -303,7 +303,7 @@
           "type": "UnitreeGo2State",
         },
         {
-          "type": "UnitreeGo2AMCL",
+          "type": "UnitreeGo2LidarLocalization",
         },
         {
           "type": "UnitreeGo2Navigation",
@@ -419,7 +419,7 @@
           "type": "UnitreeGo2State",
         },
         {
-          "type": "UnitreeGo2AMCL",
+          "type": "UnitreeGo2LidarLocalization",
         },
         {
           "type": "UnitreeGo2Navigation",
@@ -536,7 +536,7 @@
           "type": "UnitreeGo2State",
         },
         {
-          "type": "UnitreeGo2AMCL",
+          "type": "UnitreeGo2LidarLocalization",
         },
         {
           "type": "UnitreeGo2Navigation",
