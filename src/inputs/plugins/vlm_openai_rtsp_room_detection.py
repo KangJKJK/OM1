@@ -74,7 +74,7 @@ class VLMOpenAIRTSPROOM(FuserInput[str]):
         prompt = getattr(
             self.config,
             "prompt",
-            "What is the most interesting aspect in this series of images? Also return one exact guess of the room type in format [Room:Room type]. Options are [living_room, bedroom, study, kitchen, outdoor]",
+            "What is the most interesting aspect in this series of images? Also return one exact guess of the room type in format: [Room:<one of living_room, bedroom, study, kitchen, outdoor, unknown>]. Use 'unknown' if you are not at least 80 percent sure.",
         )
         fps = getattr(self.config, "fps", 15)
         self.descriptor_for_LLM = getattr(
@@ -166,16 +166,26 @@ class VLMOpenAIRTSPROOM(FuserInput[str]):
                 "outside": "outdoor",
                 "office": "study",
                 "bed room": "bedroom",
+                "unknown": "unknown",
             }
             room_type_final = normalization_map.get(norm, room_type)
 
-            if room_type_final in {
+            # Recognise 'unknown' but do not publish it
+            if room_type_final == "unknown":
+                logging.info(
+                    "Parsed room type 'unknown'; not updating IOProvider room_type."
+                )
+                return
+
+            allowed = {
                 "living_room",
                 "bedroom",
                 "study",
                 "kitchen",
                 "outdoor",
-            }:
+            }
+
+            if room_type_final in allowed:
                 try:
                     self.io_provider.add_dynamic_variable("room_type", room_type_final)
                     logging.info(f"Parsed room type: {room_type_final}")

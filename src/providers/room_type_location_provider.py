@@ -1,5 +1,7 @@
 import logging
 import threading
+import time
+from collections import Counter, deque
 from typing import Optional, Set
 
 import requests
@@ -47,6 +49,16 @@ class RoomTypeLocationProvider:
         self._lock = threading.Lock()
 
         self._posted_room_types: Set[str] = set()
+
+        self._room_history = deque()  # stores (timestamp, room_type)
+
+        self._room_window_seconds = refresh_interval * 6
+
+        # Fraction of window the winning label must occupy to be trusted
+        self._room_majority_threshold = 0.7
+
+        # How long the winning label must have been present in that window
+        self._room_min_stable_seconds = refresh_interval * 3
 
         self.io_provider = IOProvider()
 
@@ -150,26 +162,77 @@ class RoomTypeLocationProvider:
             # No valid room type available
             return
 
+        now = time.time()
+
+        # Reading to history
+        self._room_history.append((now, room_type))
+
+        # Drop old entries outside the time window
+        cutoff = now - self._room_window_seconds
+        while self._room_history and self._room_history[0][0] < cutoff:
+            self._room_history.popleft()
+
+        if not self._room_history:
+            return
+
+        # Majority vote over the window
+        counts = Counter(rt for _, rt in self._room_history)
+        winner, winner_count = counts.most_common(1)[0]
+        total = len(self._room_history)
+        majority_fraction = winner_count / float(total)
+
+        if majority_fraction < self._room_majority_threshold:
+            logging.debug(
+                "RoomTypeLocationProvider: no strong majority yet "
+                f"(winner={winner}, frac={majority_fraction:.2f}, total={total})"
+            )
+            return
+
+        # Check how long this winner has been present
+        first_winner_ts = min(ts for ts, rt in self._room_history if rt == winner)
+        stable_seconds = now - first_winner_ts
+
+        if stable_seconds < self._room_min_stable_seconds:
+            logging.debug(
+                "RoomTypeLocationProvider: majority label not yet stable "
+                f"(winner={winner}, stable_for={stable_seconds:.1f}s)"
+            )
+            return
+
+        smoothed_room_type = winner
+
+        # If we've already posted this label, keep the old behaviour: skip
+        with self._lock:
+            if smoothed_room_type in self._posted_room_types:
+                logging.debug(
+                    f"RoomTypeLocationProvider: '{smoothed_room_type}' already posted; skipping."
+                )
+                return
+
         payload = {
             "map_name": self.map_name,
-            "label": room_type,
-            "description": f"Auto-generated location for room type '{room_type}'",
+            "label": smoothed_room_type,
+            "description": (
+                f"Auto-generated location for room type '{smoothed_room_type}' "
+                f"(majority={majority_fraction:.2f}, stable_for={stable_seconds:.1f}s)"
+            ),
         }
 
         try:
             logging.info(
-                f"Posting room_type '{room_type}' to {self.base_url} with payload: {payload}"
+                f"Posting smoothed room_type '{smoothed_room_type}' to "
+                f"{self.base_url} with payload: {payload}"
             )
             resp = requests.post(self.base_url, json=payload, timeout=self.timeout)
             text = resp.text
 
             if 200 <= resp.status_code < 300:
                 logging.info(
-                    f"Room type location stored '{room_type}' -> "
+                    f"Room type location stored '{smoothed_room_type}' -> "
                     f"{resp.status_code} {text}"
                 )
                 with self._lock:
-                    self._posted_room_types.add(room_type)
+                    self._posted_room_types.add(smoothed_room_type)
             else:
                 logging.error(
                     f"Room type location API returned {resp.status_code}: {text}"
