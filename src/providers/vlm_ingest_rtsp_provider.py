@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 import time
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -66,7 +66,8 @@ def image_downscale_long(bgr, long_side=1280):
 def phash64(bgr):
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA)
-    dct = cv2.dct(np.float32(gray))
+    gray32 = gray.astype(np.float32)
+    dct = cv2.dct(gray32)
     dct_low = dct[:8, :8]
     med = np.median(dct_low)
     bits = (dct_low > med).astype(np.uint8).flatten()
@@ -175,7 +176,10 @@ class Store:
             (ts, path, phash, w, h),
         )
         self.conn.commit()
-        return cur.lastrowid
+        rowid = cur.lastrowid
+        if rowid is None:
+            raise RuntimeError("insert_frame: lastrowid is None after INSERT")
+        return int(rowid)
 
     def inc_ref(self, frame_id: int, delta: int):
         self.conn.execute(
@@ -243,10 +247,10 @@ class Store:
         cur = self.conn.cursor()
         cur.execute(
             """INSERT INTO sightings(
-                   ts, room, label, conf, frame_path, crop_path,
-                   x1, y1, x2, y2, w, h, sharpness, scene_path, frame_id
-               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ts, room, label, conf, frame_path, crop_path,
+                x1, y1, x2, y2, w, h, sharpness, scene_path, frame_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 ts,
                 room,
@@ -266,7 +270,10 @@ class Store:
             ),
         )
         self.conn.commit()
-        return cur.lastrowid
+        rowid = cur.lastrowid
+        if rowid is None:
+            raise RuntimeError("insert_sighting: lastrowid is None after INSERT")
+        return int(rowid)
 
     # -------- latest_by_label --------
 
@@ -311,6 +318,8 @@ class Store:
             (label, keep_sighting_id),
         )
         rows = cur.fetchall()
+        if rows is None:
+            return
 
         for sid, frame_id, crop_path, scene_path in rows:
             # Delete crop file
@@ -360,12 +369,15 @@ class Detector:
         self.blacklist = set(blacklist or [])
         self.whitelist = set(whitelist or [])
 
-    def infer(self, frame_bgr):
+    def infer(self, frame_bgr: np.ndarray) -> list[dict[str, Any]]:
         res = self.model.predict(
             source=frame_bgr, imgsz=self.img_size, conf=self.conf, verbose=False
         )[0]
-        out = []
-        for b in res.boxes:
+        out: list[dict[str, Any]] = []
+        boxes: Any = getattr(res, "boxes", None)
+        if boxes is None:
+            return out
+        for b in boxes:
             cls_id = int(b.cls.item())
             label = res.names[cls_id]
             if label in self.blacklist:
