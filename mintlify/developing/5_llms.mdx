@@ -3,7 +3,7 @@ title: LLMs
 description: "LLM Integration"
 ---
 
-OM1's LLM integration is intended to make it easy to (1) send `input` information to LLMs and then (2) route LLM responses to various system actions, such as `speak` and `move`. The system provides a standardized interface for communicating with many different LLM endpoints from all the major providers including Anthropic, Google, DeepSeek, OpenAI, Meta (through OpenRouter). The system also supports local LLM(Qwen3-30B) now.
+OM1's LLM integration is intended to make it easy to (1) send `input` information to LLMs and then (2) route LLM responses to various system actions, such as `speak` and `move`. The OM1 system integrates various concrete implementations of Large Language Models (LLMs) and specialized agents, each designed to address different requirements and interaction patterns. These implementations manage API communication, conversation history, and the processing of structured responses, particularly for function calls that trigger agent actions. The framework ensures a consistent interface, allowing the system to interchangeably utilize diverse LLM backends.
 
 The plugins handle authentication, API communication, prompt formatting, response parsing, and conversation history management. LLM plugin examples are located in `src/llm/plugins`: [**Code**](../../src/llm/plugins).
 
