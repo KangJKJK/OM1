@@ -24,7 +24,7 @@ Our boot sequence is as follows:
     ```
 
     Note: By default, the docker container has `CYCLONEDDS_INTERFACE` set to `eno1`, it is necessary to update it to the correct interface for G1 setup. Ideally `ROBOT_TYPE` can also be setup for Go2 but it is not mandatory.
-    
+
     The cyclone dds interface can be found by running `ifconfig` in your terminal and selecting the name of the ethernet connection. Usually for the dog it is `eno1` and for g1 it is `enP2p1s0`.
 
 - Install ROS2-jazzy and CycloneDDS on the edge device. (Optional)
